@@ -1,0 +1,119 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Ashley Wood"
+date: "April 20, 2017"
+output: html_document
+---
+
+##required packages
+```{r libraries, warning = FALSE, message = FALSE}
+library(dplyr) #data summarization
+library(caret) #predictive modeling
+library(parallel)
+library(doParallel) #both for speeding up rf modelings
+```
+
+##read the data
+```{r read data, cache = TRUE}
+training <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"))
+testing <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"))
+
+#training set dimensions
+dim(training)
+
+#testing set dimensions
+dim(testing)
+```
+
+##cleaning the data
+- if there are any variables  that are missing in every observation in the ```testing``` dataset, these variables can be eliminated from the ```training``` set, as they will provide no insight for prediction.
+- note: the dataset consists of "windows;" for each snapshot within a window, instantaneous statistics are recorded. Each row with ```new_window = no``` is a summary of the entire window. Many variables are strictly summary variables, and hence are missing in every row except the summary rows. These are the missing variabes withing the ```testing``` dataset.
+- the first 7 columns are ```X```, ```user_name```, ```raw_timestamp_part_1```, ```raw_timestamp_part_2```, ```cvtd_timestamp```, ```new_window```, and ```num_window```. These are time and ID info columns not relevant in predicting activities. we will remove these for the sake of modeling
+- change classes to numeric for easier modeling.
+```{r cleaning, cache = TRUE}
+#variables that are completely missing in the testing dataset
+NA.count <- testing %>%
+  summarize_each(funs(sum(is.na(.)))) %>%
+  as.data.frame() %>%
+  unlist() %>%
+  unname()
+
+allNA <- which(NA.count == 20)
+
+print(paste("there are", length(allNA), "variables missing from the testing dataset"))
+
+#remove these variables
+training <- training[, -allNA]
+
+#remove first 7 columns
+training <- training[,-(1:7)]
+
+#check for missing values
+any(is.na(training))
+```
+##good!
+- no more missing variables!
+
+##clean testing set
+- for modeling, need to clean testing set the same way as training
+```{r clean testing, cache = TRUE}
+testing <- testing[, -allNA] #remove NA columns
+testing <- testing[, -(1:7)] #remove first 7 non-predictor columns
+testing <- testing[, -53] #remove last column  (problem_id)
+
+#make sure we have the right columns!
+identical(colnames(training)[1:52], colnames(testing))
+```
+
+
+##partition the training set
+- split the ```training``` set into a train and validation sets (65% train, 35% validation):
+
+```{r train and validate, cache = TRUE}
+to_train <- createDataPartition(training$classe, p = 0.65, list = FALSE)
+train <- training[to_train,]
+validate <- training[-to_train,]
+```
+
+##cross validation
+use k = 5 for each model.
+```{r cv, cache = TRUE}
+fitControl <- trainControl(method = "cv", number = 5, allowParallel = TRUE)
+```
+
+
+##time to start building a model
+- we will use the random forest predictive model
+```{r model build phase 1, cache = TRUE, warning = FALSE, message = FALSE}
+#configure parallel processing
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+
+#random forest model
+set.seed(430)
+system.time(
+  fit <- train(classe ~ ., method = "rf", data = train, trControl = fitControl)
+)
+
+#de-register parallel processing cluster
+stopCluster(cluster)
+```
+
+##investigate the model
+```{r model time, cache = TRUE, warning = FALSE, message = FALSE}
+fit
+fit$finalModel
+fitPredictions <- predict(fit, validate)
+confusionMatrix(fitPredictions, validate$classe)
+```
+
+So we see in the final model, two variables at each split produces the highest accuracy (~0.991). 
+When the model was tested on my validation set, it predicted the classe with 0.9952 accuracy (95% CI = (.9922, .9967)).
+
+Finally, we will use this model to predict the class of the 20 samples in the ```testing``` set.
+
+```{r moment of truth, cache = TRUE}
+pred <- predict(fit, testing)
+prediction_results <- data.frame(problem_id = 1:20, predicted_classe = pred)
+prediction_results
+```
